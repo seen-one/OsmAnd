@@ -52,6 +52,9 @@ public class RouteGeometryWay extends
 	private boolean drawDirectionArrows = true;
 	private VectorLinesCollection actionLinesCollection;
 
+	private int currentRouteIndex = -1;
+	private int originalRouteStartIndex = 0;
+
 	private List<Segment> cachedSegments = new ArrayList<>();
 	private Segment currentCachedSegment = null;
 
@@ -62,11 +65,11 @@ public class RouteGeometryWay extends
 	}
 
 	public void setRouteStyleParams(int pathColor,
-	                                float pathWidth,
-	                                boolean drawDirectionArrows,
-	                                @Nullable @ColorInt Integer directionArrowColor,
-	                                @NonNull ColoringType routeColoringType,
-	                                @Nullable String routeInfoAttribute,
+									 float pathWidth,
+									boolean drawDirectionArrows,
+									@Nullable @ColorInt Integer directionArrowColor,
+									@NonNull ColoringType routeColoringType,
+									@Nullable String routeInfoAttribute,
 									@Nullable String gradientPalette) {
 		this.coloringChanged = this.coloringType != routeColoringType || !this.gradientPalette.equals(gradientPalette)
 				|| routeColoringType == ColoringType.ATTRIBUTE
@@ -100,16 +103,45 @@ public class RouteGeometryWay extends
 	}
 
 	public boolean updateRoute(@NonNull RotatedTileBox tb, @NonNull RouteCalculationResult route) {
-		if (coloringChanged || tb.getMapDensity() != getMapDensity() || this.route != route) {
+		boolean userMoved = this.route != null && currentRouteIndex != route.getCurrentRoute();
+		if (coloringChanged || tb.getMapDensity() != getMapDensity() || this.route != route || userMoved) {
 			this.route = route;
+			this.currentRouteIndex = route.getCurrentRoute();
 			coloringChanged = false;
+
 			List<Location> locations = route.getImmutableAllLocations();
-			if (coloringType.isGradient()) {
-				updateGradientWay(tb, locations);
-			} else if (coloringType.isRouteInfoAttribute()) {
-				updateSolidMultiColorRoute(tb, locations, route.getOriginalRoute());
+			int startIndex = route.getCurrentRoute();
+			this.originalRouteStartIndex = startIndex;
+
+			List<Location> visibleLocations;
+			if (!locations.isEmpty() && startIndex < locations.size()) {
+				List<Location> truncatedLocations = new ArrayList<>();
+				double distance = 0.0;
+				final double MAX_DISTANCE = 200.0; // 200 meters
+
+				truncatedLocations.add(locations.get(startIndex));
+
+				for (int i = startIndex; i < locations.size() - 1; i++) {
+					Location current = locations.get(i);
+					Location next = locations.get(i + 1);
+					distance += current.distanceTo(next);
+					truncatedLocations.add(next);
+					if (distance >= MAX_DISTANCE) {
+						break;
+					}
+				}
+				visibleLocations = truncatedLocations;
 			} else {
-				updateWay(locations, tb);
+				visibleLocations = locations;
+			}
+
+			if (coloringType.isGradient()) {
+				updateGradientWay(tb, visibleLocations);
+			} else if (coloringType.isRouteInfoAttribute()) {
+				// Passing the original route result as it contains segment data
+				updateSolidMultiColorRoute(tb, visibleLocations, route.getOriginalRoute());
+			} else {
+				updateWay(visibleLocations, tb);
 			}
 			return true;
 		}
@@ -134,10 +166,12 @@ public class RouteGeometryWay extends
 
 	@Override
 	public void drawSegments(@NonNull RotatedTileBox tb, @Nullable Canvas canvas, double topLatitude,
-	                         double leftLongitude, double bottomLatitude, double rightLongitude,
-	                         Location lastProjection, int startLocationIndex) {
+							 double leftLongitude, double bottomLatitude, double rightLongitude,
+							 Location lastProjection, int startLocationIndex) {
 		cachedSegments.clear();
-		super.drawSegments(tb, canvas, topLatitude, leftLongitude, bottomLatitude, rightLongitude, lastProjection, startLocationIndex);
+		// Adjust the startLocationIndex for the truncated list
+		int adjustedIndex = Math.max(0, startLocationIndex - originalRouteStartIndex);
+		super.drawSegments(tb, canvas, topLatitude, leftLongitude, bottomLatitude, rightLongitude, lastProjection, adjustedIndex);
 	}
 
 	@Override
@@ -148,8 +182,8 @@ public class RouteGeometryWay extends
 
 	@Override
 	protected boolean addInitialPoint(RotatedTileBox tb,
-	                                  double topLatitude, double leftLongitude, double bottomLatitude, double rightLongitude,
-	                                  GeometryWayStyle<?> style, Location lastPoint, int startLocationIndex) {
+									  double topLatitude, double leftLongitude, double bottomLatitude, double rightLongitude,
+									  GeometryWayStyle<?> style, Location lastPoint, int startLocationIndex) {
 		boolean added = super.addInitialPoint(tb, topLatitude, leftLongitude, bottomLatitude, rightLongitude,
 				style, lastPoint, startLocationIndex);
 		if (added) {
@@ -164,9 +198,9 @@ public class RouteGeometryWay extends
 	@Nullable
 	@Override
 	protected List<List<DrawPathData31>> cutStartOfCachedPath(@NonNull MapRendererView mapRenderer,
-	                                                          @NonNull RotatedTileBox tb,
-	                                                          int startLocationIndex,
-	                                                          Location lastProjection) {
+															  @NonNull RotatedTileBox tb,
+															  int startLocationIndex,
+															  Location lastProjection) {
 		List<List<DrawPathData31>> croppedPathData31 = super.cutStartOfCachedPath(mapRenderer, tb, startLocationIndex, lastProjection);
 		if (croppedPathData31 == null || !cachedSegments.isEmpty()) {
 			return null;
@@ -275,6 +309,7 @@ public class RouteGeometryWay extends
 		if (route != null) {
 			route = null;
 			clearWay();
+			currentRouteIndex = -1; // Reset index when route is cleared
 		}
 	}
 
